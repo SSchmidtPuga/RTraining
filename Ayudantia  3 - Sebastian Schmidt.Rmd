@@ -1,0 +1,552 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+1. Ejercicio 1 -  Calcular la perdida esperada para un credito de 30. Para esto determine:
+Si el credito cae en mora en 90 dias, se liquida la garantia por un valor 
+
+1. EAD → Exposure to default
+2. LGD -> Loss by default
+3. PD - > Probability of default
+
+PD = 20% * 20% = 4%
+LGD = 1 - 10/30 (Tasa de recuperacion) = 1 - 0.33 = 66%
+EAD = 30
+
+Perdida esperada  = 4% * 66% * 30 = 0.8 -> el banco tiene que gestionar su riesgo de credito, el banco tiene que provisionar 0.8
+
+Probabilidad de pagar cuota = 80%
+Probabilidad de no pago = 20%
+
+
+2. Ejercicio 2 - Modelo de probabilidad de incumplimiento (PD)
+ -> incumplimiento cuando hayan transcurrido más de 90 días de mora considerando a los deudores
+que caen en incumplimiento durante un periodo de 12 meses
+
+
+
+Librerias a usar
+```{r}
+#librerias
+library(readxl)
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(caTools)
+library(tidyr)
+library(ROCR)
+library(plyr)
+library(zoo)
+```
+
+Ejercicio 2 - Modelo de probabilidad de incumplimiento (PD)
+
+Importar base de datos
+
+```{r}
+library(readxl)
+creditos_consumo_A1 <- read_excel("~/Desktop/Analitica aplicada finanzas/Credit Risk/Ayudantia 2/Copia de creditos_consumo_A1.xlsx", 
+    col_types = c("date", "numeric", "numeric", 
+        "numeric", "text", "numeric", "date", 
+        "numeric", "numeric"))
+View(creditos_consumo_A1)
+```
+
+A. VALIDACIÓN DE LA INFORMACIÓN
+
+1. Análisis descriptivo de las variables relevantes. Realice gráficos de la evolución mensual
+de la suma de la variable SaldoMonto en el tiempo, la cantidad de créditos en el tiempo
+y los promedios de las variables SaldoMonto y MontoCredito en el tiempo.
+
+
+```{r}
+
+#Necesito Generar Un Dataset con cantidad de creditos, suma monto de creditos , promedio del saldo del credito, promedio del monto del credito
+
+Cantidad_Creditos <- creditos_consumo_A1 %>%
+  dplyr:: select(FechaProceso, SaldoMonto, MontoCredito)
+
+Cantidad_Creditos_db<- Cantidad_Creditos %>%
+  dplyr:: group_by(FechaProceso) %>%
+  dplyr:: summarise(Freq = n(),
+            SumSaldoMonto=sum(SaldoMonto), 
+            PromSaldoMonto=mean(SaldoMonto),
+            PromMontoCredito=mean(MontoCredito))
+
+
+View(Cantidad_Creditos_db)
+
+##Graficos
+Numero_Creditos <- ts(Cantidad_Creditos_db[,2], start = 2017, frequency = 12)
+plot(Numero_Creditos, ylim=c(0,3000), main="Numero de Creditos por Periodo", ylab = " Numero de creditos")
+
+
+SumSaldoMonto_ts <- ts(Cantidad_Creditos_db[,3], start = 2017, frequency = 12)
+plot(SumSaldoMonto_ts, ylim=c(0,6e+09), main="Suma Saldos por Periodo", ylab = " Suma Saldos")
+
+
+PromSaldoMonto_ts <- ts(Cantidad_Creditos_db[,4], start = 2017, frequency = 12)
+plot(PromSaldoMonto_ts, ylim=c(0,2500000), main="Promedio montos por periodo", ylab = " Promedio Saldo Monto")
+
+
+PromMontoCredito_ts <- ts(Cantidad_Creditos_db[,5], start = 2017, frequency = 12)
+plot(PromMontoCredito_ts, ylim=c(0,3000000), main="Promedio monto Credito por periodo", ylab = "Promedio monto Credito")
+                             
+                             
+```
+
+2. ¿Qué podría inferir del comportamiento de la cartera en el tiempo?
+
+La Cartera como podemos Apreciar va auamentando en tamaño, cada año van ingresando mas creditos. en donde la suma total de los creditos va aumentando, ademas de el promedio de todos los creditos.
+
+
+B. TRANSFORMACIÓN O CONSTRUCCIÓN DE VARIABLES
+
+1. Identificar los créditos en incumplimiento y generar la marca de incumplimiento.
+
+```{r}
+
+## Creating dummy variable if the credit is in default
+
+View(creditos_consumo_A1)
+creditos_consumo_A1$Default  <- ifelse(creditos_consumo_A1$DiasMora <= 90, 0, 1)
+
+
+```
+
+2. Generar la base de datos “vigente” con los clientes sin incumplimiento y la base de datos
+“incumplimiento” con los clientes en incumplimiento
+
+```{r}
+Creditos_incumplidos_1 <- filter(creditos_consumo_A1,Default == 1 )
+Creditos_vigentes <- filter(creditos_consumo_A1,Default == 0 )
+View(Creditos_incumplidos_1)
+View(Creditos_vigentes)
+
+
+
+```
+
+3. Generar la variable transición al incumplimiento considerando los créditos en
+incumplimiento en un horizonte de 12 meses.
+
+```{r}
+
+
+## Lo que debo hacer es en un dataset de los creditos que estan vigentes agregarles cuando seran incumplidos
+Creditos_incumplidos <- aggregate(x=Creditos_incumplidos_1$FechaProceso, by = list(Creditos_incumplidos_1$iColocacion), FUN = min)
+View(Creditos_incumplidos)
+
+# Colocacion fecha de incumplimiento
+names (Creditos_incumplidos)[1] = "iColocacion"
+names (Creditos_incumplidos) [2] = "Fecha_Incum"
+
+
+Creditos_vigentes <- left_join(Creditos_vigentes,Creditos_incumplidos,by=c("iColocacion"))
+View(Creditos_vigentes)
+
+#Eliminar todos los incumplimientos anteriores 
+Creditos_vigentes$Fecha_Incum <- replace(Creditos_vigentes$Fecha_Incum, Creditos_vigentes$Fecha_Incum <= Creditos_vigentes$FechaProceso, NA )
+
+Creditos_vigentes$MesesDiferencia <- interval(Creditos_vigentes$FechaProceso, Creditos_vigentes$Fecha_Incum) %/% months(1) 
+
+
+
+View(Creditos_vigentes)
+#Tasa de incumplimiento 12 M
+Creditos_vigentes$TR12 <- c(Creditos_vigentes$MesesDiferencia <= 12 )
+
+View(Creditos_vigentes)
+
+## Si es na que sea igual a 0 
+Creditos_vigentes$TR12 <- replace(Creditos_vigentes$MesesDiferencia ,is.na(Creditos_vigentes$MesesDiferencia),0) 
+
+View(Creditos_vigentes)
+
+
+```
+
+4. Generar variable antigüedad del crédito en meses.
+
+```{r}
+
+Creditos_vigentes$Antiguedad <- interval(Creditos_vigentes$FechaActivacion ,Creditos_vigentes$FechaProceso) %/% months(1) 
+
+Creditos_vigentes$TramoAntiguedad <- ifelse(Creditos_vigentes$Antiguedad <= 4, "Antiguedad [0,4] Meses",
+                                     ifelse(Creditos_vigentes$Antiguedad <= 13, "Antiguedad [5,13] Meses",
+                                     ifelse(Creditos_vigentes$Antiguedad <= 16, "Antiguedad [14,16] Meses",
+                                     ifelse(Creditos_vigentes$Antiguedad <= 21, "Antiguedad [17,21] Meses", "Mas de 21 meses"))))
+
+
+```
+
+5. Construir la variable porcentaje pagado del crédito, esto es, (MontoCredito -
+SaldoMonto)/MontoCredito
+
+```{r}
+
+Creditos_vigentes$PorcentajePagado <-  ( Creditos_vigentes$MontoCredito - Creditos_vigentes$SaldoMonto ) / Creditos_vigentes$MontoCredito 
+
+```
+
+6. Generar la variable Estado del Crédito.
+
+```{r}
+
+
+Creditos_vigentes$Estado_credito <- ifelse(Creditos_vigentes$DiasMora == 0 , "Al Dia",
+                                    ifelse(Creditos_vigentes$DiasMora <= 14, "Mora entre [0,14] Dias", "Mora mas de 15 dias"))
+
+
+Creditos_vigentes$Tramo_PorcPagado <- ifelse (Creditos_vigentes$PorcentajePagado <= 0.07, "PORC <=7",
+                                    ifelse (Creditos_vigentes$PorcentajePagado <= 0.25, "PORC (7,25]",
+                                            ifelse (Creditos_vigentes$PorcentajePagado <= 0.40, "PORC (25,40]","PORC >40")))
+
+
+```
+
+7. ¿Podría realizarse otra tramificación de las variables? ¿Se debe confiar solo en el
+resultados de los modelos utilizados o es necesario considerar también el juicio
+experto? Justifique su opinión.
+
+
+Si se podria, se podria realizar un modelo de desición de arbol, para asi definir otras tramificaciones para las variables, y siempre se debe considerar el juicio de un experto, el modelo puede tener errores o no estar tomando un posible variable que es intangible que puede llegar afectar todo.
+
+
+
+8. Genere las muestras de entrenamiento y prueba. Utilice una proporción de 80% para la
+muestra de entrenamiento y de 20% para la muestra de prueba.
+
+```{r}
+
+
+## Selecionar cada ID
+ID <- count(Creditos_vigentes, "iColocacion")
+
+set.seed(1)
+spl <- sample.split(ID$iColocacion, 0.8)
+
+View(spl)
+train <- subset(ID, spl == TRUE)
+test <- subset(ID, spl == FALSE)
+
+names(train)[2] = "Muestra_Entrenamiento"
+
+Creditos_vigentes <- left_join(Creditos_vigentes, train, by = c("iColocacion"))
+
+View(Creditos_vigentes)
+
+
+Creditos_vigentes$Muestra_Entrenamiento <- replace(Creditos_vigentes$Muestra_Entrenamiento, Creditos_vigentes$Muestra_Entrenamiento != "NA" , 1)
+
+Creditos_vigentes$Muestra_Entrenamiento.x <- replace(Creditos_vigentes$Muestra_Entrenamiento, is.na(Creditos_vigentes$Muestra_Entrenamiento), 0)
+
+MuestraEntrenamiento <- filter(Creditos_vigentes ,Muestra_Entrenamiento == 1 )
+Muestratesteo <- filter(Creditos_vigentes ,Muestra_Entrenamiento == 0 )
+
+
+View(MuestraEntrenamiento)
+
+```
+
+9. ¿Por qué es relevante el muestreo de datos?
+
+
+La muestra de datos es relevante, dado que es la manera d epoder verificar que el modelo que estoy entrenando funciona luego con datos similares, si es que entrenase con todo el set de datos, no tengo como comprobar que mi modelo esta bien optimizado/entrenado.
+
+
+10. Valide que la muestra de prueba tiene un comportamiento similar a la muestra de entrenamiento. Para ello, compute el promedio de la marca de incumplimiento en el horizonte de 12 meses en las dos muestras y grafique los promedio en el tiempo.
+
+```{r}
+
+View(Creditos_vigentes)
+
+View(MuestraEntrenamiento)
+FP_06_17_entren <- subset(Creditos_vigentes, FechaProceso <= "2017-06-30" & Muestra_Entrenamiento == 1)
+
+FP_06_17_prueba <- subset(Creditos_vigentes, FechaProceso <= "2017-06-30" & Muestra_Entrenamiento == 0)
+
+
+View(FP_06_17_entren)
+
+Promedio_entrenamiento <- FP_06_17_entren %>%
+  dplyr:: group_by(FechaProceso) %>%
+  dplyr::summarise(Promedio = mean(MontoCredito))
+
+
+Promedio_testeo <- FP_06_17_prueba %>%
+  dplyr:: group_by(FechaProceso) %>%
+  dplyr::summarise(Promedio = mean(MontoCredito))
+
+View(Promedio_testeo)
+
+  
+Tiempo_12_meses_Entranamiento_ts  <- ts(Promedio_entrenamiento[,1], start = 2017, frequency = 12)
+Tiempo_12_meses_testeo_ts  <- ts(Promedio_testeo[,1], start = 2017, frequency = 12)
+
+plot(Promedio_testeo, ylim=c(0,3000000), main="Promedio montos por periodo", ylab = " Promedio Saldo Monto")
+plot(Promedio_entrenamiento, ylim=c(0,3000000), main="Promedio montos por periodo", ylab = " Promedio Saldo Monto")
+
+
+
+
+```
+Ejercicio 2 - Modelo de probabilidad de incumplimiento (PD)
+
+Obtenga el Weight Of Evidence (WOE)
+
+```{r}
+## contar por tramO TramoAntiguedad
+
+View(FP_06_17_entren)
+
+
+FP_06_17_entren_buenos_clientes <- filter(FP_06_17_entren, TR12 == 0 )
+FP_06_17_entren_malos_clientes <- filter(FP_06_17_entren, TR12 > 0 )
+View(FP_06_17_entren_malos_clientes)
+
+Conteo_Antiguedad_total <- FP_06_17_entren %>%
+  dplyr::group_by(TramoAntiguedad) %>% 
+  dplyr::summarise(Total = n())
+
+View(Conteo_Antiguedad_total)
+
+Conteo_Antiguedad_Buenos <- FP_06_17_entren_buenos_clientes %>%
+  dplyr::group_by(TramoAntiguedad) %>% 
+  dplyr::summarise(Buenos = n()) 
+
+
+
+
+View(Conteo_Antiguedad_Malos)
+
+tabla_conteo_antiguedad <- cbind(Conteo_Antiguedad_total,Conteo_Antiguedad_Buenos$Buenos )
+names(tabla_conteo_antiguedad)[3] = "N_Buenos"
+
+tabla_conteo_antiguedad$N_Malos <- tabla_conteo_antiguedad$Total - tabla_conteo_antiguedad$N_Buenos
+
+tabla_conteo_antiguedad$Porc_Buenos <- tabla_conteo_antiguedad$N_Buenos / sum(tabla_conteo_antiguedad$N_Buenos) 
+tabla_conteo_antiguedad$Porc_Malos <- tabla_conteo_antiguedad$N_Malos /sum(tabla_conteo_antiguedad$N_Malos)
+
+tabla_conteo_antiguedad$WOE <- log(tabla_conteo_antiguedad$Porc_Buenos /tabla_conteo_antiguedad$Porc_Malos ) 
+
+## La tabla se debe analizar de  la siguiente manera, mientras mas negativo el WOE mas riesgo tengo, entonces todos los creditos entre  14  y 16 meses mas riesgosa es.
+
+tabla_conteo_antiguedad$IV <- (tabla_conteo_antiguedad$Porc_Buenos - tabla_conteo_antiguedad$Porc_Malos) * tabla_conteo_antiguedad$WOE
+
+tabla_conteo_antiguedad$IV_Total <- sum(tabla_conteo_antiguedad$IV)
+
+
+## El information Value determina el poder predictivo de la variable, en este caso como nos da 0.02, podemos decir que es un discriminante debil,
+                                    
+View(tabla_conteo_antiguedad)
+
+```
+
+
+
+```{r}
+## Porcentaje pagado
+
+
+Conteo_Tramo_PorcPagado_total <- FP_06_17_entren %>%
+  dplyr::group_by(Tramo_PorcPagado) %>% 
+  dplyr::summarise(Total = n())
+
+
+Conteo_Tramo_PorcPagado_Buenos <- FP_06_17_entren_buenos_clientes %>%
+  dplyr::group_by(Tramo_PorcPagado) %>% 
+  dplyr::summarise(Buenos = n()) 
+
+
+tabla_conteo_Tramo_PorcPagado <- cbind(Conteo_Tramo_PorcPagado_total,Conteo_Tramo_PorcPagado_Buenos$Buenos )
+names(tabla_conteo_Tramo_PorcPagado)[3] = "N_Buenos"
+
+tabla_conteo_Tramo_PorcPagado$N_Malos <- tabla_conteo_Tramo_PorcPagado$Total - tabla_conteo_Tramo_PorcPagado$N_Buenos
+
+tabla_conteo_Tramo_PorcPagado$Porc_Buenos <- tabla_conteo_Tramo_PorcPagado$N_Buenos / sum(tabla_conteo_Tramo_PorcPagado$N_Buenos) 
+tabla_conteo_Tramo_PorcPagado$Porc_Malos <- tabla_conteo_Tramo_PorcPagado$N_Malos /sum(tabla_conteo_Tramo_PorcPagado$N_Malos)
+
+tabla_conteo_Tramo_PorcPagado$WOE <- log(tabla_conteo_Tramo_PorcPagado$Porc_Buenos /tabla_conteo_Tramo_PorcPagado$Porc_Malos ) 
+
+## La tabla se debe analizar de  la siguiente manera, mientras mas negativo el WOE mas riesgo tengo, entonces todos los creditos con procentaje pagado entre 25 y 40 % son los mas riesgosos
+
+tabla_conteo_Tramo_PorcPagado$IV <- (tabla_conteo_Tramo_PorcPagado$Porc_Buenos - tabla_conteo_Tramo_PorcPagado$Porc_Malos) * tabla_conteo_Tramo_PorcPagado$WOE
+
+tabla_conteo_Tramo_PorcPagado$IV_Total <- sum(tabla_conteo_Tramo_PorcPagado$IV)
+
+
+## El information Value determina el poder predictivo de la variable, en este caso como nos da 0.19, podemos decir que no es un discriminante relevante
+                                    
+View(tabla_conteo_Tramo_PorcPagado)
+```
+
+
+
+```{r}
+## Dias Mora
+
+
+Conteo_Tramo_DiasMora_total <- FP_06_17_entren %>%
+  dplyr::group_by(Estado_credito) %>% 
+  dplyr::summarise(Total = n())
+
+
+Conteo_Tramo_DiasMora_Buenos <- FP_06_17_entren_buenos_clientes %>%
+  dplyr::group_by(Estado_credito) %>% 
+  dplyr::summarise(Buenos = n()) 
+
+View(Conteo_Tramo_DiasMora_total)
+
+tabla_conteo_Tramo_DiasMora <- cbind(Conteo_Tramo_DiasMora_total,Conteo_Tramo_DiasMora_Buenos$Buenos )
+names(tabla_conteo_Tramo_DiasMora)[3] = "N_Buenos"
+
+tabla_conteo_Tramo_DiasMora$N_Malos <- tabla_conteo_Tramo_DiasMora$Total - tabla_conteo_Tramo_DiasMora$N_Buenos
+
+tabla_conteo_Tramo_DiasMora$Porc_Buenos <- tabla_conteo_Tramo_DiasMora$N_Buenos / sum(tabla_conteo_Tramo_DiasMora$N_Buenos) 
+tabla_conteo_Tramo_DiasMora$Porc_Malos <- tabla_conteo_Tramo_DiasMora$N_Malos /sum(tabla_conteo_Tramo_DiasMora$N_Malos)
+
+tabla_conteo_Tramo_DiasMora$WOE <- log(tabla_conteo_Tramo_DiasMora$Porc_Buenos /tabla_conteo_Tramo_DiasMora$Porc_Malos ) 
+
+## La tabla se debe analizar de  la siguiente manera, mientras mas negativo el WOE mas riesgo tengo, entonces todos los creditos con procentaje pagado entre 25 y 40 % son los mas riesgosos
+
+tabla_conteo_Tramo_DiasMora$IV <- (tabla_conteo_Tramo_DiasMora$Porc_Buenos - tabla_conteo_Tramo_DiasMora$Porc_Malos) * tabla_conteo_Tramo_DiasMora$WOE
+
+tabla_conteo_Tramo_DiasMora$IV_Total <- sum(tabla_conteo_Tramo_DiasMora$IV)
+
+
+## El information Value determina el poder predictivo de la variable, en este caso como nos da 0.4, podemos decir que es un discriminante muy bueno
+                                    
+View(tabla_conteo_Tramo_DiasMora)
+
+names(tabla_conteo_antiguedad)[1] = "Tramos"
+names(tabla_conteo_Tramo_PorcPagado)[1] = "Tramos"
+names(tabla_conteo_Tramo_DiasMora)[1] = "Tramos"
+
+
+```
+
+
+
+3) Correlacion entre las variables
+
+```{r}
+
+Tabla_seleccion_Variables <-  rbind(tabla_conteo_antiguedad,tabla_conteo_Tramo_PorcPagado ,tabla_conteo_Tramo_DiasMora )
+
+
+Cor_antiguedad_pagado <- cor(MuestraEntrenamiento$Antiguedad, MuestraEntrenamiento$PorcentajePagado)
+Cor_antiguedad_mora <- cor(MuestraEntrenamiento$Antiguedad, MuestraEntrenamiento$DiasMora)
+Cor_pagado_mora <- cor(MuestraEntrenamiento$PorcentajePagado, MuestraEntrenamiento$DiasMora)
+
+Cor_antiguedad_pagado
+Cor_antiguedad_mora
+Cor_pagado_mora
+
+
+```
+
+```{r}
+
+## Regresion logistica dejamos de lado porcentaje pagados dado que tiene mucha correlacion con tramo antiguedad y es un mal predictor
+
+names(tabla_conteo_antiguedad)[1] = "TramoAntiguedad"
+View(tabla_conteo_antiguedad)
+
+tabla_conteo_antiguedad <- select(tabla_conteo_antiguedad , TramoAntiguedad, WOE )
+
+names(tabla_conteo_antiguedad)[2] <-" WOE_Antiguedad"
+Entrenamiento <- left_join(MuestraEntrenamiento ,tabla_conteo_antiguedad , by=c("TramoAntiguedad"))
+View(Entrenamiento)
+
+
+
+View(MuestraEntrenamiento)
+
+names(tabla_conteo_Tramo_DiasMora)[1] = "Estado_credito"
+
+tabla_conteo_Tramo_DiasMora <- select(tabla_conteo_Tramo_DiasMora , Estado_credito, WOE )
+names(tabla_conteo_Tramo_DiasMora)[2] <-"WOE_Estado_Credito"
+
+View(tabla_conteo_Tramo_DiasMora)
+Entrenamiento <- left_join(Entrenamiento ,tabla_conteo_Tramo_DiasMora , by=c("Estado_credito"))
+View(Entrenamiento)
+
+
+
+
+modelo_logistico <- glm(Entrenamiento$TR12 ~  Entrenamiento$WOE_Estado_Credito + Entrenamiento$` WOE_Antiguedad`, data =Entrenamiento, family = "binomial" )
+
+summary(modelo_logistico)
+
+mean(modelo_logistico$residuals^2)
+
+#Prediciones
+
+Entrenamiento$Prediccion <- predict(modelo_logistico , newdata = Entrenamiento , type = "response")
+Entrenamiento$Prediccion1 <- -2.17649 + -1.21204*Entrenamiento$WOE_Estado_Credito + -0.83708 *Entrenamiento$` WOE_Antiguedad
+Entrenamiento$Odds_ratio <- 1/(1+exp(-Entrenamiento$Prediccion1))
+View(Entrenamiento)
+```
+
+
+Ahora calcular la matriz de transicion, la cual es sacar la probabilidad de cada tramo juntando las dos variables 
+```{r}
+
+FP_06_17_entren$TR12 <- ifelse(FP_06_17_entren$TR12 > 0, 1, 0)
+
+
+transition_matrix <- t(table(FP_06_17_entren$Estado_credito, FP_06_17_entren$TramoAntiguedad ))
+transition_matrix_incumplen <- xtabs(TR12~TramoAntiguedad+Estado_credito, FP_06_17_entren)
+
+View(transition_matrix_incumplen)
+
+transition_matrix <- transition_matrix_incumplen / transition_matrix 
+View(transition_matrix)
+
+## Que significa esto entonces, por ejemplo los creditos que estan al dia y estan en un peiodo de 0,4 meses van a cumplir un 16%
+
+```
+
+
+
+Validacion de ambos modelos
+
+```{r}
+FP_06_17_prueba_1 <- left_join(FP_06_17_prueba ,tabla_conteo_antiguedad, by = c("TramoAntiguedad") )
+FP_06_17_prueba <- left_join(FP_06_17_prueba_1 ,tabla_conteo_Tramo_DiasMora, by = c("Estado_credito") )
+
+
+View(FP_06_17_prueba)
+
+
+View(Creditos_vigentes)
+
+
+Creditos_vigentes_1 <- left_join(Creditos_vigentes ,tabla_conteo_antiguedad, by = c("TramoAntiguedad") )
+Creditos_vigentes <- left_join(Creditos_vigentes_1 ,tabla_conteo_Tramo_DiasMora, by = c("Estado_credito") )
+
+
+Creditos_vigentes$prediccion <- -2.17649 + -1.21204*Creditos_vigentes$WOE_Estado_Credito.x + -0.83708 *Creditos_vigentes$` WOE_Antiguedad.x`
+Creditos_vigentes$prediccion <- 1/(1+exp(-Creditos_vigentes$prediccion))
+
+View(transition_matrix)
+View(Creditos_vigentes)
+
+
+
+Creditos_vigentes <- left_join(Creditos_vigentes , transition_matrix,copy=TRUE, by =c("TramoAntiguedad", "Estado_credito"))
+
+Creditos_vigentes$R2Log <- mean((Creditos_vigentes$TR12 - Creditos_vigentes$prediccion)^2)
+View(Creditos_vigentes)
+
+
+Creditos_vigentes$R2Matrix <- mean((Creditos_vigentes$TR12 - Creditos_vigentes$Freq)^2)
+
+
+```
+
+
+
+
+
